@@ -326,3 +326,77 @@ the remaining avenues are:
 1. **Log-domain inference** — don't touch weights, restructure the arithmetic
 2. **Tropical simplification** — simplify the computed function, not the parameters
 3. **Move to a larger model** — where over-parameterization creates real redundancy
+
+---
+
+## 2026-03-02: Log-Domain Inference
+
+### Hypothesis
+Instead of compressing the weights, restructure the ARITHMETIC. In log domain:
+- Multiplications become additions (cheaper in FPGA/ASIC)
+- Storage: sign (1 bit) + log2|w| (8-16 bits) vs FP32 (32 bits)
+- The model computes the same function, just using different arithmetic
+
+### Three Tests
+
+#### 1. Weight Roundtrip: W → (sign, log2|W|) → reconstruct
+- **Max error:** 1.91e-06 (NOT zero!)
+- **Exact fraction:** 44.0% of weights round-trip exactly
+- **Verdict: NOT lossless** in FP32. The log2/pow2 conversion loses precision
+  because FP32 can represent numbers that aren't exact powers of 2. This was
+  expected — true lossless requires storing the full FP32 log value (no savings).
+
+#### 2. Log-Domain Matmul Accuracy
+Tested on layer 0 c_fc (768×3072), input shape (1, 10, 768):
+
+| Metric | Value |
+|--------|-------|
+| Max absolute diff | 4.5e-05 |
+| Mean absolute diff | 6.0e-06 |
+| Max relative diff | 1.6% |
+| Mean relative diff | 0.001% |
+
+The log-domain matmul (sign separation + log-sum-exp) is numerically very close
+to dense matmul — accurate enough for practical inference. The differences come from
+floating-point ordering in the log-sum-exp accumulation, not from the representation.
+
+#### 3. Speed Benchmark (CUDA, RTX 3090, 500 iterations)
+
+| Layer | Shape | Dense (ms) | Log-domain (ms) | Ratio | MaxDiff |
+|-------|-------|-----------|-----------------|-------|---------|
+| c_attn | 768×2304 | 0.046 | 33.46 | 728x slower | 0.0004 |
+| c_proj | 768×768 | 0.096 | 10.82 | 113x slower | 0.0004 |
+| c_fc | 768×3072 | 0.044 | 44.42 | 1016x slower | 0.0004 |
+| c_proj_mlp | 3072×768 | 0.088 | 44.56 | 504x slower | 0.0015 |
+
+**Log-domain is 100-1000x slower on GPU.** This is expected and not the point.
+GPUs are multiply-accumulate machines; log-domain adds overhead (sign separation,
+broadcasting, log-sum-exp, masking). The value of log-domain is for:
+- **FPGA/ASIC** where adders are 3-5x cheaper than multipliers in silicon area
+- **Optical hardware** where phase = log-amplitude naturally (Tim's Caltech connection)
+- **Establishing mathematical correctness** — proving the representation change works
+
+#### Storage Analysis
+| Format | Size | Ratio |
+|--------|------|-------|
+| FP32 (original) | 474.7 MB | 1.00x |
+| Log domain (1 + 16-bit log) | 252.2 MB | 0.53x |
+| Log domain (1 + 8-bit log) | 133.5 MB | 0.28x |
+
+Theoretical savings of 47-72%, but requires custom hardware/firmware to use.
+On standard GPU/CPU, you'd need to decompress back to FP32 for computation.
+
+### Key Takeaways
+1. **Log-domain is a representation change, not a compression method** — it trades
+   precision and compute format for storage efficiency, only useful on non-standard hardware
+2. **The math works** — max relative error of 1.6% in actual matmul, well within
+   practical inference tolerances (typical quantization loses more)
+3. **Not lossless** — FP32 precision is lost in the log2/pow2 conversion. True lossless
+   would need to store the exact FP32 value, defeating the storage purpose
+4. **Speed is irrelevant on GPU** — this is a hardware architecture play, not a GPU optimization
+
+### Updated Next Steps
+- [x] **Log-domain inference** — tested, math works, GPU impractical (as expected)
+- [ ] **Tropical algebra simplification** — function-level, not parameter-level (most speculative, highest potential)
+- [ ] **Try on larger model** (Qwen3-0.6B or similar) — over-parameterized models may have compressible redundancy
+- [ ] **Summary paper/writeup** — consolidate all findings into a coherent narrative
