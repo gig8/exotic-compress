@@ -82,9 +82,16 @@ Relevant for: custom inference engines, FPGA/ASIC deployment, optical hardware i
 | Tensor Train (truncated) | Yes | No (err 73-99%) | 0.001-0.22x | Not benchmarked | Smooth error decay, no elbow |
 | Kronecker | Planned | - | - | - | |
 | Tropical | Planned | - | - | - | Functional-level, not parameter-level |
-| Log-domain | Planned | - | - | - | Representation change for hardware |
+| Log-domain roundtrip | Yes | No (err 1.9e-6) | 0.53x theoretical | N/A | FP32 precision lost in log2/pow2 |
+| Log-domain matmul | Yes | No (diff 4.5e-5) | 0.53x theoretical | 100-1000x slower | GPU worst case; designed for FPGA/optical |
+| Kronecker | Planned | - | - | - | |
+| Tropical | Planned | - | - | - | Functional-level, not parameter-level |
 
 ### Core Finding So Far
 GPT-2 Small's weight matrices are "maximally dense" — nearly full rank, no block structure.
 Standard matrix factorizations cannot compress them losslessly. Speed gains are possible
 via restructured computation (SVD on tall matrices) independent of compression.
+
+Log-domain arithmetic is mathematically sound (max relative error 1.6%) but not suitable
+for GPU execution. Its value is for FPGA/ASIC hardware where adders are 3-5x cheaper
+than multipliers, and for optical hardware where phase = log-amplitude naturally.
