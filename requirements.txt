@@ -1,0 +1,6 @@
+torch>=2.0
+transformers>=4.35
+numpy>=1.24
+tensorly>=0.8
+matplotlib>=3.7
+tqdm
