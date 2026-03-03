@@ -262,7 +262,67 @@ all available capacity.
 - Log-domain: can we restructure the arithmetic without touching the weights?
 
 ### Updated Next Steps
-- [ ] **Cross-layer analysis** — compare weight similarity across layers 0-11
+- [x] **Cross-layer analysis** — compare weight similarity across layers 0-11
 - [ ] **Log-domain inference** — restructure arithmetic, not weights
 - [ ] Explore tropical algebra simplification (function-level)
 - [ ] Try on Qwen3-0.6B (larger model may have more redundancy)
+
+---
+
+## 2026-03-02: Cross-Layer Weight Analysis
+
+### Hypothesis
+Maybe the structure isn't within individual weight matrices but BETWEEN layers.
+If layers share structure, we could use weight sharing or delta-encoding
+(W_i = W_base + ΔW_i where ΔW_i is low-rank, like post-hoc LoRA).
+
+### Four Analyses Run
+
+#### 1. Weight Cosine Similarity
+**Result: Layers are essentially orthogonal.** Cosine similarity between any two
+layers' flattened weights is ~0.00 (range -0.004 to +0.022). The layers are as
+different as random matrices would be.
+
+#### 2. Top-50 Subspace Alignment
+**Result: Weak to moderate shared subspaces.** Alignment scores:
+- c_attn: 0.39 mean (some shared input subspace)
+- c_proj attn: 0.22 mean (weak)
+- c_fc: 0.47 mean (moderate — FFN up-projections share input directions)
+- c_proj mlp: 0.11 mean (nearly orthogonal)
+
+The FFN up-projections (c_fc) have the most shared subspace structure, but not
+enough for practical compression.
+
+#### 3. Spectral Similarity
+**Result: Very similar spectra across layers.** All groups show 0.97-1.00 spectral
+similarity. The layers have nearly identical singular value distributions — they
+just "rotate" differently. This means the layers are similarly "dense" but in
+different directions.
+
+#### 4. Delta Analysis (W_i - W_mean)
+**Result: Deltas are FULL RANK. No post-hoc LoRA is possible.**
+- All delta matrices have effective rank (1%) = 768/768 = 100% full rank
+- Delta norms are ~96% of the weight norms — the mean explains almost nothing
+- Top-50 singular values of the delta capture only 23-37% of its energy
+
+**Exception:** attn.c_proj layers 0, 1, and 11 show lower effective rank at 10%
+threshold (186-239 vs 400+ for middle layers) and higher energy concentration.
+These edge layers are slightly more compressible via delta-encoding — but not enough
+to matter.
+
+### Meta-Conclusion
+**GPT-2 Small uses ALL of its capacity. There is no redundancy at any level:**
+- Within layers: full rank, no block structure, no tensor structure
+- Between layers: orthogonal weights, full-rank deltas, no shareable structure
+- Spectra: similar distributions but different rotations (each layer is unique)
+
+This is actually consistent with GPT-2 being an efficiently-trained 124M model.
+There's no "waste" to compress. Larger, over-parameterized models (7B+) likely
+have much more redundancy — which is why LoRA works so well on them.
+
+### The Path Forward
+Since weight-level compression is provably impossible for GPT-2 Small losslessly,
+the remaining avenues are:
+1. **Log-domain inference** — don't touch weights, restructure the arithmetic
+2. **Tropical simplification** — simplify the computed function, not the parameters
+3. **Move to a larger model** — where over-parameterization creates real redundancy
