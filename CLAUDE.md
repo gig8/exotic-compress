@@ -9,6 +9,11 @@ python -m exotic_compress.baseline               # generate reference outputs
 python -m exotic_compress.compress_svd            # SVD compression
 python -m exotic_compress.compress_svd --threshold 0.01  # near-lossless SVD
 python -m exotic_compress.compress_tt             # Tensor Train compression
+python -m exotic_compress.compress_monarch        # Monarch factorization
+python -m exotic_compress.cross_layer             # Cross-layer weight analysis
+python -m exotic_compress.log_domain --bench      # Log-domain inference
+python -m exotic_compress.tropical                # Tropical/functional analysis
+python -m exotic_compress.bench                   # Speed benchmarks
 pytest tests/                                    # run tests
 ```
 
@@ -28,6 +33,11 @@ exotic_compress/          # Python package
   verify.py               # Lossless verification against baseline
   compress_svd.py         # SVD-based decomposition
   compress_tt.py          # Tensor Train decomposition
+  compress_monarch.py     # Monarch matrix factorization
+  cross_layer.py          # Cross-layer weight similarity analysis
+  log_domain.py           # Log-domain arithmetic (representation change)
+  tropical.py             # Tropical/functional analysis (activation patterns, dimensionality)
+  bench.py                # Speed benchmarks (dense vs factored matmul)
 artifacts/                # Generated data (gitignored)
   baseline/               # Reference fingerprints and logits
   svd/                    # SVD compression results
