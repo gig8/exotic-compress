@@ -53,13 +53,23 @@ Factorize W = P × M₁ × P^T × M₂ where:
 
 **Why it works:** This is a generalized butterfly/Hadamard factorization. Many linear transforms (FFT, Hadamard, convolutions) have this structure. Trained weight matrices may approximately have it too.
 
-## 5. Tropical Simplification (research phase)
+## 5. Tropical / Functional Analysis
+
+**File:** `exotic_compress/tropical.py`
 
 ReLU networks compute tropical rational functions (piecewise-linear maps). Two different weight configurations can compute the SAME function. Tropical algebra may reveal when this happens, enabling algebraic simplification.
 
-This is the most speculative but potentially most powerful approach — it operates on the function level, not the parameter level.
+Our practical approach analyzes the FUNCTION the network computes rather than full tropical algebra:
+1. **Dead neuron detection** — neurons that never activate can be removed
+2. **Activation pattern analysis** — correlation between neuron pairs
+3. **Effective dimensionality** — PCA on hidden activations to find actual subspace used
+4. **GELU linearity analysis** — what fraction of activations are in the linear regime
 
-## 6. Log-Domain Inference (planned)
+**Key finding:** GPT-2's 3072-dim MLP activations are effectively ~130-180 dimensional (99% variance) — only 5% of hidden capacity is used on natural text. However, GELU (not ReLU) means classical tropical algebra doesn't directly apply.
+
+## 6. Log-Domain Inference
+
+**File:** `exotic_compress/log_domain.py`
 
 Not compression per se, but a representation change:
 - Store weights as log2(|w|) + sign bit
@@ -80,8 +90,8 @@ Relevant for: custom inference engines, FPGA/ASIC deployment, optical hardware i
 | Monarch (full rank) | Yes | Yes | 1.25x EXPANSION | Slower | No natural block structure |
 | Tensor Train (full rank) | Yes | Yes | 1.3-2.6x EXPANSION | Not benchmarked | No tensor structure in GPT-2 |
 | Tensor Train (truncated) | Yes | No (err 73-99%) | 0.001-0.22x | Not benchmarked | Smooth error decay, no elbow |
+| Tropical (functional) | Yes | N/A | N/A | N/A | Activations use ~5% of 3072-dim hidden space |
 | Kronecker | Planned | - | - | - | |
-| Tropical | Planned | - | - | - | Functional-level, not parameter-level |
 | Log-domain roundtrip | Yes | No (err 1.9e-6) | 0.53x theoretical | N/A | FP32 precision lost in log2/pow2 |
 | Log-domain matmul | Yes | No (diff 4.5e-5) | 0.53x theoretical | 100-1000x slower | GPU worst case; designed for FPGA/optical |
 | Kronecker | Planned | - | - | - | |
@@ -95,3 +105,8 @@ via restructured computation (SVD on tall matrices) independent of compression.
 Log-domain arithmetic is mathematically sound (max relative error 1.6%) but not suitable
 for GPU execution. Its value is for FPGA/ASIC hardware where adders are 3-5x cheaper
 than multipliers, and for optical hardware where phase = log-amplitude naturally.
+
+Functional analysis reveals a gap between weight-level and function-level structure:
+weights are full-rank (no compression possible), but the functions they compute on
+natural text use only ~5% of the available hidden dimensionality. This suggests
+input-adaptive or activation-guided approaches as the true path to compression.

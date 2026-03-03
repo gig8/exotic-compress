@@ -397,6 +397,91 @@ On standard GPU/CPU, you'd need to decompress back to FP32 for computation.
 
 ### Updated Next Steps
 - [x] **Log-domain inference** — tested, math works, GPU impractical (as expected)
-- [ ] **Tropical algebra simplification** — function-level, not parameter-level (most speculative, highest potential)
+- [x] **Tropical / functional analysis** — activation pattern and dimensionality analysis
 - [ ] **Try on larger model** (Qwen3-0.6B or similar) — over-parameterized models may have compressible redundancy
 - [ ] **Summary paper/writeup** — consolidate all findings into a coherent narrative
+
+---
+
+## 2026-03-02: Tropical / Functional Analysis
+
+### Hypothesis
+Instead of compressing weights, analyze the FUNCTION the network computes.
+If MLP activations live in a low-dimensional subspace, the 3072-dim hidden layer
+has more capacity than it uses. This is the practical first step before full
+tropical algebra (which operates on piecewise-linear function simplification).
+
+### Four Analyses Run (Layers 0, 5, 11)
+
+#### 1. Dead Neuron Detection
+**Result: ZERO dead neurons across all layers.** Every single one of the 3072 MLP
+neurons in every layer activates on at least 4.9% of tokens (most >72%). GPT-2
+Small wastes nothing — every neuron contributes.
+
+#### 2. Activation Pattern Analysis
+**Result: Nearly unique patterns per token.** 218 unique patterns out of 225 tokens.
+Almost every input token produces a different binary activation pattern.
+Virtually no correlation between neuron pairs (1-9 correlated pairs out of 124,750 sampled).
+The network is fully utilizing the combinatorial space of neuron activations.
+
+#### 3. Effective Dimensionality (THE KEY FINDING)
+**Result: Activations live in ~100-185 dimensions out of 3072.**
+
+| Layer | 90% var | 95% var | 99% var | Participation Ratio | Top-10 PCs |
+|-------|---------|---------|---------|--------------------:|------------|
+| 0     | 114     | 135     | 161     | 25.5                | 37.1%      |
+| 5     | 120     | 149     | 185     | 21.6                | 38.6%      |
+| 11    | 98      | 132     | 181     | 34.0                | 44.4%      |
+
+**The 3072-dim hidden activations are effectively ~130-180 dimensional** (at 99% variance).
+This means 94-96% of the hidden dimensions are redundant — the MLP projects to 3072
+but only uses ~5% of that space on natural text.
+
+This is NOT compressible by weight-level methods (the weights are full rank to REACH
+those 150 active dimensions), but it means a 768→150→768 MLP could theoretically
+approximate the 768→3072→768 MLP with much less compute.
+
+**Caveat:** This is measured on only 225 tokens from 20 texts. With more diverse
+inputs, the effective dimensionality might be higher. The weights need to SUPPORT
+all possible inputs, even if most inputs use a subspace.
+
+#### 4. GELU Linearity
+**Result: Only 1-2% of activations are in GELU's linear regime.**
+
+| Layer | Deep off | Transition (-3,-1) | Nonlinear (-1,1) | Transition (1,3) | Deep on |
+|-------|---------|-------------------|------------------|------------------|---------|
+| 0     | 1.4%    | 52.9%             | 44.9%            | 0.7%             | 0.0%    |
+| 5     | 2.1%    | 46.2%             | 51.1%            | 0.5%             | 0.0%    |
+| 11    | 1.1%    | 39.9%             | 57.1%            | 1.9%             | 0.1%    |
+
+**The vast majority of activations (95-98%) are in GELU's nonlinear transition zone**
+(-3 to 1). This means:
+- The network is NOT mostly piecewise-linear (unlike deep ReLU networks)
+- GELU's smooth nonlinearity is being actively used, not just as an on/off gate
+- Classic tropical algebra (designed for ReLU = max(0,x)) applies less directly
+- The network is doing something more subtle than binary activation patterns
+
+### Meta-Conclusions
+
+1. **First real structural finding:** The 3072-dim hidden space is ~95% redundant
+   on natural text. A much smaller MLP could approximate this layer's function.
+   BUT this is input-dependent — the weights must support the full space for rare inputs.
+
+2. **GELU breaks the tropical assumption:** Tropical algebra works on ReLU networks
+   because ReLU creates exact piecewise-linear functions. GELU creates smooth
+   nonlinearities — the tropical framework needs modification for GELU networks.
+
+3. **The weight-vs-function gap is real:** The weights are full-rank (we proved this),
+   but the function they compute is low-dimensional. This gap is WHERE compression
+   lives — not in the weights, but in what the weights DO on actual inputs.
+
+4. **Input-adaptive compression:** The right approach may be dynamic —
+   project to a smaller subspace for "typical" inputs, use full capacity for edge cases.
+   This is essentially what MoE (Mixture of Experts) architectures do.
+
+### Updated Next Steps
+- [x] **Tropical / functional analysis** — found effective dimensionality ~5% of hidden dim
+- [ ] **Repeat with larger corpus** — verify effective dimensionality holds with diverse text
+- [ ] **Try on larger model** (Qwen3-0.6B) — over-parameterized models may show even more redundancy
+- [ ] **Implement activation-aware compression** — use PCA of activations to guide weight pruning
+- [ ] **Summary writeup** — consolidate all findings
