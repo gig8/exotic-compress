@@ -104,8 +104,72 @@ The speed gains above come with significant accuracy loss (max_diff 11-21). For 
 
 ### Updated Next Steps
 - [ ] Run TT decomposition and compare compression ratios
-- [ ] **Implement Monarch matrix factorization** (priority — designed for speed)
+- [x] **Implement Monarch matrix factorization** (priority — designed for speed)
 - [ ] Implement Kronecker factorization (W ≈ A ⊗ B)
 - [ ] Benchmark full model end-to-end inference with factored layers
+- [ ] Explore tropical algebra simplification
+- [ ] Implement log-domain inference
+
+---
+
+## 2026-03-02: Monarch Matrix Factorization Results
+
+### What is Monarch?
+Factor a dense matrix W (m×n) as: M = P_L @ L @ P_R @ R, where L and R are
+block-diagonal matrices and P_L, P_R are fixed permutations (reshape + transpose).
+Storage: O(n^{3/2}) instead of O(n²). FLOPs: same reduction.
+
+### Experiment 4: Rank Sweep on c_fc layer (768×3072)
+Blocks=24, block_size=(32,128), max_rank=32.
+
+| Rank | ParamRatio | Params    | RelError | Lossless? |
+|------|-----------|-----------|----------|-----------|
+| 1    | 0.039     | 92,160    | 0.955    | no        |
+| 2    | 0.078     | 184,320   | 0.916    | no        |
+| 4    | 0.156     | 368,640   | 0.844    | no        |
+| 8    | 0.312     | 737,280   | 0.714    | no        |
+| 12   | 0.469     | 1,105,920 | 0.595    | no        |
+| 16   | 0.625     | 1,474,560 | 0.483    | no        |
+| 24   | 0.938     | 2,211,840 | 0.270    | no        |
+| **32** | **1.250** | **2,949,120** | **0.000** | **YES** |
+
+### Key Finding: Lossless Only at Full Block Rank
+Monarch projection is lossless ONLY at max rank (rank=32 for block_size 32×128).
+At max rank, the param ratio is 1.25 — same expansion as full-rank SVD. GPT-2's
+weights have no natural Monarch structure; the sub-blocks are full-rank.
+
+The error curve is roughly linear — no "elbow" suggesting hidden low-rank block structure.
+This means the weights don't naturally decompose into block-diagonal form.
+
+### Experiment 5: Monarch Rank-1 Speed Benchmark (CUDA, RTX 3090)
+
+| Layer         | Shape     | Dense(ms) | Monarch(ms) | Speedup | RelErr |
+|---------------|-----------|-----------|-------------|---------|--------|
+| c_attn        | 768×2304  | 0.0508    | 0.1959      | 0.26x   | 0.942  |
+| c_proj (attn) | 768×768   | 0.0387    | 0.2166      | 0.18x   | 0.791  |
+| c_fc          | 768×3072  | 0.0471    | 0.1983      | 0.24x   | 0.955  |
+| c_proj (mlp)  | 3072×768  | 0.0536    | 0.1987      | 0.27x   | 0.909  |
+
+**Monarch rank-1 is 3-5x SLOWER than dense** on GPU. The einsum-based factored
+forward pass has too much Python/kernel-launch overhead at these small matrix sizes.
+Monarch's theoretical O(n√n) advantage only manifests at much larger n, or with
+custom CUDA kernels that fuse the block-diagonal operations.
+
+### Implications
+1. **GPT-2 Small is too small for Monarch speedups.** The overhead of structured
+   computation dominates at 768-dim. Monarch is designed for n ≥ 4096+.
+2. **No natural block structure** in GPT-2 weights — rank sweep shows linear error
+   decay, not an elbow. The weights are "maximally dense" relative to Monarch basis.
+3. **Need either:** (a) much larger models where n is large enough, or (b) hardware-
+   native structured ops (custom CUDA kernels, photonic block-diagonal).
+4. **For lossless on GPT-2:** must look at approaches that exploit OTHER structure
+   than rank or block-diagonal: cross-layer patterns, weight symmetries, or the
+   tropical/functional view.
+
+### Updated Next Steps
+- [ ] Run TT decomposition (different structural assumption)
+- [ ] Analyze cross-layer weight similarity (do layers share structure?)
+- [ ] Implement Kronecker factorization (different decomposition basis)
+- [ ] Try on a larger model (Qwen3-0.6B) where n=1536+ may show Monarch benefit
 - [ ] Explore tropical algebra simplification
 - [ ] Implement log-domain inference
