@@ -67,3 +67,24 @@ Not compression per se, but a representation change:
 - The model computes the same function, just using different arithmetic
 
 Relevant for: custom inference engines, FPGA/ASIC deployment, optical hardware interface.
+
+---
+
+## Experimental Status Summary
+
+| Method | Implemented | Lossless? | Compression | Speed on GPU | Notes |
+|--------|-------------|-----------|-------------|-------------|-------|
+| SVD (full rank) | Yes | Bit-exact | 1.25x EXPANSION | 1.39x faster (tall matrices only) | Useful for speed, not size |
+| SVD (truncated) | Yes | No (diff ~7) | 1.21x EXPANSION | - | GPT-2 is full rank; useless |
+| Monarch (rank-1) | Yes | No (err 95%) | 25x compression | 3-5x slower | Way too lossy |
+| Monarch (full rank) | Yes | Yes | 1.25x EXPANSION | Slower | No natural block structure |
+| Tensor Train (full rank) | Yes | Yes | 1.3-2.6x EXPANSION | Not benchmarked | No tensor structure in GPT-2 |
+| Tensor Train (truncated) | Yes | No (err 73-99%) | 0.001-0.22x | Not benchmarked | Smooth error decay, no elbow |
+| Kronecker | Planned | - | - | - | |
+| Tropical | Planned | - | - | - | Functional-level, not parameter-level |
+| Log-domain | Planned | - | - | - | Representation change for hardware |
+
+### Core Finding So Far
+GPT-2 Small's weight matrices are "maximally dense" — nearly full rank, no block structure.
+Standard matrix factorizations cannot compress them losslessly. Speed gains are possible
+via restructured computation (SVD on tall matrices) independent of compression.

@@ -120,8 +120,14 @@ def compress_layer_tt(
     if max_rank is not None:
         rank = [1] + [max_rank] * (len(tt_shape) - 1) + [1]
     else:
-        # Full rank — let tensorly decide
-        rank = None
+        # Full rank — compute max possible ranks at each position
+        # TT-rank at position k is at most min(prod(shape[:k]), prod(shape[k:]))
+        rank = [1]
+        for k in range(1, len(tt_shape)):
+            left = int(np.prod(tt_shape[:k]))
+            right = int(np.prod(tt_shape[k:]))
+            rank.append(min(left, right))
+        rank.append(1)
 
     cores = tensor_train(tensor, rank=rank)
 
@@ -208,6 +214,67 @@ def compress_model_tt(
     return model, tt_layers, stats
 
 
+def analyze_tt_single_layer(name: str, weight: np.ndarray) -> dict:
+    """Analyze TT structure of a single layer at various max ranks.
+
+    Returns dict with rank sweep results showing error vs compression.
+    """
+    m, n = weight.shape
+    m_factors = factorize_shape(m)
+    n_factors = factorize_shape(n)
+    tt_shape = tuple(m_factors + n_factors)
+
+    if np.prod(m_factors) != m or np.prod(n_factors) != n:
+        return {"error": "unfactorizable"}
+
+    results = []
+
+    # Full rank first (lossless baseline)
+    tt_full = compress_layer_tt(name, weight, max_rank=None)
+    if tt_full is None:
+        return {"error": "decomposition failed"}
+
+    results.append({
+        "max_rank": "full",
+        "tt_ranks": tt_full.tt_ranks,
+        "compressed_params": tt_full.compressed_params,
+        "ratio": round(tt_full.ratio, 4),
+        "max_error": float(np.max(np.abs(
+            weight.astype(np.float32) - tt_full.reconstruct().astype(np.float32)
+        ))),
+    })
+
+    # Rank sweep
+    for max_rank in [2, 4, 8, 16, 32, 64, 128]:
+        try:
+            tt = compress_layer_tt(name, weight, max_rank=max_rank)
+            if tt is None:
+                continue
+            recon = tt.reconstruct().astype(np.float32)
+            max_err = float(np.max(np.abs(weight.astype(np.float32) - recon)))
+            rel_err = float(np.linalg.norm(weight - recon.astype(np.float64))
+                           / np.linalg.norm(weight))
+            results.append({
+                "max_rank": max_rank,
+                "tt_ranks": tt.tt_ranks,
+                "compressed_params": tt.compressed_params,
+                "ratio": round(tt.ratio, 4),
+                "max_error": max_err,
+                "rel_error": round(rel_err, 6),
+            })
+        except Exception:
+            continue
+
+    return {
+        "name": name,
+        "shape": [m, n],
+        "tt_shape": list(tt_shape),
+        "m_factors": m_factors,
+        "n_factors": n_factors,
+        "results": results,
+    }
+
+
 def main():
     import argparse
 
@@ -216,35 +283,95 @@ def main():
         "--max-rank", type=int, default=None,
         help="Max TT-rank (None = full rank, lossless)"
     )
+    parser.add_argument(
+        "--rank-sweep", action="store_true",
+        help="Analyze TT structure at various ranks for representative layers"
+    )
     args = parser.parse_args()
 
     output_dir = Path("artifacts/tt")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"=== Tensor Train Compression (max_rank={args.max_rank}) ===\n")
+    print(f"=== Tensor Train Compression ===\n")
 
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     model = GPT2LMHeadModel.from_pretrained("gpt2")
 
-    model, tt_layers, stats = compress_model_tt(model, max_rank=args.max_rank)
+    if args.rank_sweep:
+        print("--- TT Rank Sweep ---\n")
+        target_layers = [
+            "transformer.h.0.attn.c_attn.weight",
+            "transformer.h.0.attn.c_proj.weight",
+            "transformer.h.0.mlp.c_fc.weight",
+            "transformer.h.0.mlp.c_proj.weight",
+        ]
 
-    with open(output_dir / "tt_stats.json", "w") as f:
-        json.dump(stats, f, indent=2)
+        for pname, param in model.named_parameters():
+            if pname not in target_layers:
+                continue
+            W = param.detach().cpu().numpy().astype(np.float64)
+            m, n = W.shape
+            m_factors = factorize_shape(m)
+            n_factors = factorize_shape(n)
 
-    print(f"\nOverall ratio: {stats['overall_ratio']:.4f}")
-    print(f"Skipped layers: {len(stats['skipped'])}")
+            print(f"--- {pname} ({m}x{n}) ---")
+            print(f"    Reshape: {m} = {'x'.join(str(f) for f in m_factors)}, "
+                  f"{n} = {'x'.join(str(f) for f in n_factors)}")
+            print(f"    TT-shape: ({', '.join(str(f) for f in m_factors + n_factors)})\n")
 
-    print(f"\n{'Layer':<45} {'TT-Shape':<25} {'Ranks':<20} {'Ratio':<10}")
-    print("-" * 100)
-    for name, info in stats["layers"].items():
-        shape_str = "x".join(str(s) for s in info["tt_shape"])
-        rank_str = str(info["tt_ranks"])
-        print(f"{name:<45} {shape_str:<25} {rank_str:<20} {info['ratio']:<10.4f}")
+            analysis = analyze_tt_single_layer(pname, W)
+            if "error" in analysis:
+                print(f"    ERROR: {analysis['error']}\n")
+                continue
 
-    # Verify
-    print("\n=== Verification ===\n")
-    results = verify_lossless(model, tokenizer)
-    print_verification(results)
+            print(f"    {'MaxRank':<10} {'Ratio':<10} {'Params':<12} {'MaxErr':<12} {'RelErr':<10} {'TT-Ranks'}")
+            print(f"    {'-'*80}")
+            for r in analysis["results"]:
+                rank_str = str(r["max_rank"])
+                rel_err = r.get("rel_error", 0.0)
+                lossless_mark = " <-- LOSSLESS" if r["max_error"] < 1e-5 else ""
+                print(
+                    f"    {rank_str:<10} {r['ratio']:<10.4f} {r['compressed_params']:<12,} "
+                    f"{r['max_error']:<12.2e} {rel_err:<10.6f} "
+                    f"{r['tt_ranks']}{lossless_mark}"
+                )
+            print()
+
+        # Save analysis
+        with open(output_dir / "tt_rank_sweep.json", "w") as f:
+            all_analysis = {}
+            for pname, param in model.named_parameters():
+                if pname not in target_layers:
+                    continue
+                W = param.detach().cpu().numpy().astype(np.float64)
+                all_analysis[pname] = analyze_tt_single_layer(pname, W)
+            json.dump(all_analysis, f, indent=2)
+
+    else:
+        # Standard compression run
+        print(f"Max rank: {args.max_rank}\n")
+        model, tt_layers, stats = compress_model_tt(model, max_rank=args.max_rank)
+
+        with open(output_dir / "tt_stats.json", "w") as f:
+            json.dump(stats, f, indent=2)
+
+        print(f"\nOverall ratio: {stats['overall_ratio']:.4f}")
+        print(f"Skipped layers: {len(stats['skipped'])}")
+
+        print(f"\n{'Layer':<45} {'TT-Shape':<25} {'Ranks':<30} {'Ratio':<10} {'MaxErr':<12}")
+        print("-" * 125)
+        for name, info in stats["layers"].items():
+            shape_str = "x".join(str(s) for s in info["tt_shape"])
+            rank_str = str(info["tt_ranks"])
+            print(
+                f"{name:<45} {shape_str:<25} {rank_str:<30} "
+                f"{info['ratio']:<10.4f} {info['max_reconstruction_error']:<12.2e}"
+            )
+
+        # Verify
+        print("\n=== Verification ===\n")
+        results = verify_lossless(model, tokenizer)
+        print_verification(results)
 
 
 if __name__ == "__main__":

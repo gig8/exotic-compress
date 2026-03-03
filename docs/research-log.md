@@ -167,9 +167,102 @@ custom CUDA kernels that fuse the block-diagonal operations.
    tropical/functional view.
 
 ### Updated Next Steps
-- [ ] Run TT decomposition (different structural assumption)
+- [x] Run TT decomposition (different structural assumption)
 - [ ] Analyze cross-layer weight similarity (do layers share structure?)
 - [ ] Implement Kronecker factorization (different decomposition basis)
 - [ ] Try on a larger model (Qwen3-0.6B) where n=1536+ may show Monarch benefit
 - [ ] Explore tropical algebra simplification
 - [ ] Implement log-domain inference
+
+---
+
+## 2026-03-02: Tensor Train Decomposition Results
+
+### What TT Tests For
+TT decomposition reshapes a 2D matrix into a high-order tensor and decomposes it into
+a chain of small 3D cores (Matrix Product State in physics). This finds **Kronecker-like**
+and **hierarchical tensor** structure that SVD and Monarch can't detect.
+
+Example: 768×2304 → reshape to (96, 2, 2, 2, 288, 2, 2, 2) → 8 TT-cores.
+
+### Experiment 6: TT Rank Sweep
+
+#### c_attn (768×2304) — QKV projection
+| MaxRank | Ratio  | Params    | RelErr | Lossless? |
+|---------|--------|-----------|--------|-----------|
+| 2       | 0.001  | 1,388     | 0.998  | no        |
+| 8       | 0.011  | 19,668    | 0.974  | no        |
+| 32      | 0.047  | 83,028    | 0.926  | no        |
+| 128     | 0.223  | 394,324   | 0.728  | no        |
+| full    | 1.443  | 2,552,916 | 0.000  | YES       |
+
+Full TT-ranks at lossless: [1, 96, 192, 384, 768, 8, 4, 2, 1]
+
+#### c_proj attn (768×768) — attention output
+| MaxRank | Ratio  | Params    | RelErr | Lossless? |
+|---------|--------|-----------|--------|-----------|
+| 8       | 0.013  | 7,380     | 0.956  | no        |
+| 64      | 0.136  | 79,956    | 0.768  | no        |
+| 128     | 0.335  | 197,716   | 0.564  | no        |
+| full    | 2.328  | 1,373,268 | 0.000  | YES       |
+
+#### c_fc (768×3072) — FFN up-projection
+| MaxRank | Ratio  | Params    | RelErr | Lossless? |
+|---------|--------|-----------|--------|-----------|
+| 32      | 0.046  | 107,604   | 0.943  | no        |
+| 128     | 0.209  | 492,628   | 0.802  | no        |
+| full    | 1.332  | 3,142,740 | 0.000  | YES       |
+
+#### c_proj mlp (3072×768) — FFN down-projection
+| MaxRank | Ratio  | Params    | RelErr | Lossless? |
+|---------|--------|-----------|--------|-----------|
+| 64      | 0.042  | 98,388    | 0.909  | no        |
+| 128     | 0.104  | 245,844   | 0.863  | no        |
+| full    | 2.563  | 6,045,780 | 0.000  | YES       |
+
+### Key Findings
+
+1. **Full-rank TT is even WORSE than SVD for expansion:** ratio 1.3-2.6x at lossless.
+   The 8-core TT structure adds overhead from the chain of rank connections.
+
+2. **No hidden tensor structure:** Error decays smoothly with rank, no elbow.
+   The full TT-ranks reach 768 at the boundary between row/column factors — meaning
+   the matrix has no exploitable Kronecker-like separability.
+
+3. **Interesting asymmetry in the TT-ranks:** The ranks are large in the middle
+   (where row and column factors meet) and small at the edges (where the binary
+   factors are). This matches theory: the "entanglement" is at the row/column boundary.
+
+4. **The reshape factorization matters:** 768 = 96×2×2×2 puts most information in
+   the large factor (96). A different factorization (e.g., 768 = 4×4×6×8) might
+   distribute entanglement differently and yield different compression behavior.
+
+### Comparison Across Methods (Layer 0, c_proj 768×768)
+
+| Method           | Lossless Ratio | At 10% params | RelErr @10% |
+|------------------|----------------|---------------|-------------|
+| SVD              | 1.250          | r=76 (0.20)   | ~0.42       |
+| Monarch (rank-k) | 1.250          | rank=2 (0.06) | ~0.79       |
+| TT               | 2.328          | rank=64 (0.14)| ~0.77       |
+| Dense (original) | 1.000          | —             | 0.000       |
+
+**None of the three decompositions can compress GPT-2 losslessly.** The weights are
+genuinely dense/unstructured in all tested bases.
+
+### Meta-Conclusion: The Weights Are Not the Right Target
+
+Three independent structural analyses (SVD/rank, Monarch/block-diagonal, TT/tensor)
+all agree: GPT-2 Small's weight matrices have no exploitable structure for lossless
+compression. The weights are what they need to be — they've been optimized to use
+all available capacity.
+
+**The logical next step is to shift from parameter-level to function-level analysis:**
+- Cross-layer redundancy: do different layers compute similar functions?
+- Tropical simplification: can the piecewise-linear function be simplified?
+- Log-domain: can we restructure the arithmetic without touching the weights?
+
+### Updated Next Steps
+- [ ] **Cross-layer analysis** — compare weight similarity across layers 0-11
+- [ ] **Log-domain inference** — restructure arithmetic, not weights
+- [ ] Explore tropical algebra simplification (function-level)
+- [ ] Try on Qwen3-0.6B (larger model may have more redundancy)
