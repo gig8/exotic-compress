@@ -1,0 +1,69 @@
+# Compression Methods
+
+## 1. SVD Decomposition
+
+**File:** `exotic_compress/compress_svd.py`
+
+Any matrix W (m×n) can be decomposed as W = U @ diag(S) @ Vt where:
+- U is (m × r) orthogonal
+- S is (r,) diagonal (singular values, sorted descending)
+- Vt is (r × n) orthogonal
+- r = min(m, n) for full rank
+
+**Storage:**
+- Original: m × n parameters
+- SVD: m×r + r + r×n = r(m + n + 1) parameters
+- Breaks even when r < mn/(m+n+1)
+- For 768×768: breaks even at r < 384 (50% of full rank)
+- For 768×3072: breaks even at r < 615 (80% of full rank)
+
+**Lossless guarantee:** Full-rank SVD reconstructs exactly (up to floating point).
+
+**Near-lossless:** Truncate singular values below threshold. Error bound: ||W - W_r||_F = sqrt(sum of dropped s_i^2).
+
+## 2. Tensor Train (TT) Decomposition
+
+**File:** `exotic_compress/compress_tt.py`
+
+Reshape a matrix into a higher-order tensor, then factorize into a "train" of small cores.
+
+Example: W (768×768) → reshape to (4, 4, 6, 8, 4, 4, 6, 8) → TT decomposition
+
+Each core G_k has shape (r_{k-1}, n_k, r_k) where r_k is the TT-rank at position k.
+
+**Storage:** sum of r_{k-1} × n_k × r_k for each core.
+
+**Key insight:** If W has Kronecker-like structure (W ≈ A ⊗ B ⊗ C), the TT-ranks will be 1, giving massive compression. Real weight matrices won't be rank-1 TT, but low TT-rank indicates exploitable structure.
+
+## 3. Kronecker Factorization (planned)
+
+Find A (p×q) and B (s×t) such that W = A ⊗ B where m=p×s, n=q×t.
+
+**Storage:** p×q + s×t vs m×n = p×s × q×t. Exponential savings if it works.
+
+**Challenge:** Exact Kronecker structure rarely exists. Need nearest Kronecker product (Van Loan & Pitsianis algorithm).
+
+## 4. Monarch Matrices (planned)
+
+Factorize W = P × M₁ × P^T × M₂ where:
+- P is a fixed permutation matrix (free)
+- M₁, M₂ are block-diagonal matrices
+
+**Storage:** O(n^1.5) instead of O(n²).
+
+**Why it works:** This is a generalized butterfly/Hadamard factorization. Many linear transforms (FFT, Hadamard, convolutions) have this structure. Trained weight matrices may approximately have it too.
+
+## 5. Tropical Simplification (research phase)
+
+ReLU networks compute tropical rational functions (piecewise-linear maps). Two different weight configurations can compute the SAME function. Tropical algebra may reveal when this happens, enabling algebraic simplification.
+
+This is the most speculative but potentially most powerful approach — it operates on the function level, not the parameter level.
+
+## 6. Log-Domain Inference (planned)
+
+Not compression per se, but a representation change:
+- Store weights as log2(|w|) + sign bit
+- Multiplications become additions (cheaper in hardware)
+- The model computes the same function, just using different arithmetic
+
+Relevant for: custom inference engines, FPGA/ASIC deployment, optical hardware interface.
